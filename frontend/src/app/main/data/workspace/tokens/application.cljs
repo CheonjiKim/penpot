@@ -656,77 +656,79 @@
   this is useful for applying a single attribute from an attributes set
   while removing other applied tokens from this set."
   [{:keys [attributes attributes-to-remove token shape-ids on-update-shape]}]
+  (assert (ctob/token? token) "apply-token event requires a valid token")
   (ptk/reify ::apply-token
     ptk/WatchEvent
     (watch [_ state _]
       ;; We do not allow to apply tokens while text editor is open.
       ;; The classic text editor sets :workspace-editor-state; the WASM text editor
       ;; does not, so we also check :workspace-local :edition for text shapes.
-      (let [edition       (get-in state [:workspace-local :edition])
-            objects       (dsh/lookup-page-objects state)
-            text-editing? (and (some? edition)
-                               (= :text (:type (get objects edition))))]
-        (if (and (empty? (get state :workspace-editor-state))
-                 (not text-editing?))
-          (let [attributes-to-remove
-                ;; Remove atomic typography tokens when applying composite and vice-verca
-                (cond
-                  (ctt/typography-token-keys (:type token)) (set/union attributes-to-remove ctt/typography-keys)
-                  (ctt/typography-keys (:type token)) (set/union attributes-to-remove ctt/typography-token-keys)
-                  :else attributes-to-remove)]
-            (when-let [tokens (some-> (dsh/lookup-file-data state)
-                                      (get :tokens-lib)
-                                      (ctob/get-tokens-in-active-sets))]
-              (->> (if (contains? cf/flags :tokenscript)
-                     (rx/of (ts/resolve-tokens tokens))
-                     (sd/resolve-tokens tokens))
-                   (rx/mapcat
-                    (fn [resolved-tokens]
-                      (let [undo-id (js/Symbol)
-                            objects (dsh/lookup-page-objects state)
-                            selected-shapes (select-keys objects shape-ids)
+      (when token
+        (let [edition       (get-in state [:workspace-local :edition])
+              objects       (dsh/lookup-page-objects state)
+              text-editing? (and (some? edition)
+                                 (= :text (:type (get objects edition))))]
+          (if (and (empty? (get state :workspace-editor-state))
+                   (not text-editing?))
+            (let [attributes-to-remove
+                  ;; Remove atomic typography tokens when applying composite and vice-versa
+                  (cond
+                    (ctt/typography-token-keys (:type token)) (set/union attributes-to-remove ctt/typography-keys)
+                    (ctt/typography-keys (:type token)) (set/union attributes-to-remove ctt/typography-token-keys)
+                    :else attributes-to-remove)]
+              (when-let [tokens (some-> (dsh/lookup-file-data state)
+                                        (get :tokens-lib)
+                                        (ctob/get-tokens-in-active-sets))]
+                (->> (if (contains? cf/flags :tokenscript)
+                       (rx/of (ts/resolve-tokens tokens))
+                       (sd/resolve-tokens tokens))
+                     (rx/mapcat
+                      (fn [resolved-tokens]
+                        (let [undo-id (js/Symbol)
+                              objects (dsh/lookup-page-objects state)
+                              selected-shapes (select-keys objects shape-ids)
 
-                            shapes (->> selected-shapes
-                                        (filter (fn [[_ shape]]
-                                                  (or
-                                                   (and (ctsl/any-layout-immediate-child? objects shape)
-                                                        (some ctt/spacing-margin-keys attributes))
-                                                   (and (ctt/any-appliable-attr-for-shape? attributes (:type shape) (:layout shape))
-                                                        (all-attrs-appliable-for-token? attributes (:type token)))))))
-                            shape-ids (d/nilv (keys shapes)  [])
-                            any-variant? (->> shapes vals (some ctk/is-variant?) boolean)
+                              shapes (->> selected-shapes
+                                          (filter (fn [[_ shape]]
+                                                    (or
+                                                     (and (ctsl/any-layout-immediate-child? objects shape)
+                                                          (some ctt/spacing-margin-keys attributes))
+                                                     (and (ctt/any-appliable-attr-for-shape? attributes (:type shape) (:layout shape))
+                                                          (all-attrs-appliable-for-token? attributes (:type token)))))))
+                              shape-ids (d/nilv (keys shapes)  [])
+                              any-variant? (->> shapes vals (some ctk/is-variant?) boolean)
 
-                            resolved-value (get-in resolved-tokens [(cfo/token-identifier token) :resolved-value])
-                            resolved-value (if (contains? cf/flags :tokenscript)
-                                             (ts/tokenscript-symbols->penpot-unit resolved-value)
-                                             resolved-value)
-                            tokenized-attributes (cfo/attributes-map attributes token)
-                            type (:type token)]
-                        (rx/concat
-                         (rx/of
-                          (st/emit! (ev/event {::ev/name "apply-tokens"
-                                               :type type
-                                               :applied-to attributes
-                                               :applied-to-variant any-variant?}))
-                          (dwu/start-undo-transaction undo-id)
-                          (dwsh/update-shapes shape-ids (fn [shape]
-                                                          (cond-> shape
-                                                            attributes-to-remove
-                                                            (update :applied-tokens #(apply (partial dissoc %) attributes-to-remove))
-                                                            :always
-                                                            (update :applied-tokens merge tokenized-attributes)))))
-                         (when on-update-shape
-                           (let [res (on-update-shape resolved-value shape-ids attributes)]
-                             ;; Composed updates return observables and need to be executed differently
-                             (if (rx/observable? res)
-                               res
-                               (rx/of res))))
-                         (rx/of (dwu/commit-undo-transaction undo-id)))))))))
+                              resolved-value (get-in resolved-tokens [(:name token) :resolved-value])
+                              resolved-value (if (contains? cf/flags :tokenscript)
+                                               (ts/tokenscript-symbols->penpot-unit resolved-value)
+                                               resolved-value)
+                              tokenized-attributes (cfo/attributes-map attributes token)
+                              type (:type token)]
+                          (rx/concat
+                           (rx/of
+                            (st/emit! (ev/event {::ev/name "apply-tokens"
+                                                 :type type
+                                                 :applied-to attributes
+                                                 :applied-to-variant any-variant?}))
+                            (dwu/start-undo-transaction undo-id)
+                            (dwsh/update-shapes shape-ids (fn [shape]
+                                                            (cond-> shape
+                                                              attributes-to-remove
+                                                              (update :applied-tokens #(apply (partial dissoc %) attributes-to-remove))
+                                                              :always
+                                                              (update :applied-tokens merge tokenized-attributes)))))
+                           (when on-update-shape
+                             (let [res (on-update-shape resolved-value shape-ids attributes)]
+                               ;; Composed updates return observables and need to be executed differently
+                               (if (rx/observable? res)
+                                 res
+                                 (rx/of res))))
+                           (rx/of (dwu/commit-undo-transaction undo-id)))))))))
 
-          (rx/of (ntf/show {:content (tr "workspace.tokens.error-text-edition")
-                            :type :toast
-                            :level :warning
-                            :timeout 3000})))))))
+            (rx/of (ntf/show {:content (tr "workspace.tokens.error-text-edition")
+                              :type :toast
+                              :level :warning
+                              :timeout 3000}))))))))
 
 (defn apply-spacing-token-separated
   "Handles edge-case for spacing token when applying token via toggle button.

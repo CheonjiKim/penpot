@@ -314,15 +314,10 @@
                         {:value parsed-value
                          :unit unit}))))
 
-;; FIXME: looks very redundant function
-(defn token-identifier
-  [{:keys [name] :as _token}]
-  name)
-
 (defn attributes-map
   "Creats an attributes map using collection of `attributes` for `id`."
   [attributes token]
-  (->> (map (fn [attr] [attr (token-identifier token)]) attributes)
+  (->> (map (fn [attr] [attr (:name token)]) attributes)
        (into {})))
 
 (defn remove-attributes-for-token
@@ -339,7 +334,7 @@
   "Test if `token` is applied to a `shape` on single `token-attribute`."
   [token shape token-attribute]
   (when-let [id (dm/get-in shape [:applied-tokens token-attribute])]
-    (= (token-identifier token) id)))
+    (= (:name token) id)))
 
 (defn token-applied?
   "Test if `token` is applied to a `shape` with at least one of the given `token-attributes`."
